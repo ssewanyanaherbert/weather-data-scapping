@@ -1,0 +1,233 @@
+name: Weather Data Pipeline CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily at 8 AM UTC to ensure everything still works
+    - cron: '0 8 * * *'
+
+env:
+  PYTHON_VERSION: '3.9'
+  KAFKA_VERSION: '2.13-2.8.0'
+  POSTGRES_VERSION: '14'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      zookeeper:
+        image: wurstmeister/zookeeper:3.4.6
+        ports:
+          - 2181:2181
+
+      kafka:
+        image: wurstmeister/kafka:${{ env.KAFKA_VERSION }}
+        ports:
+          - 9092:9092
+        environment:
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_CREATE_TOPICS: "weather-data:1:1"
+        depends-on: zookeeper
+
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_weather_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pylint black flake8
+
+    - name: Check code formatting with Black
+      run: |
+        black --check --diff producer/ consumer/ utils/ storage/
+
+    - name: Lint with flake8
+      run: |
+        flake8 producer/ consumer/ utils/ storage/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 producer/ consumer/ utils/ storage/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Run unit tests
+      env:
+        OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        COUNTRY: UG
+        KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        WEATHER_TOPIC: weather-data
+        DB_USER: test_user
+        DB_PASSWORD: test_password
+        DB_NAME: test_weather_db
+        DB_HOST: localhost
+        DB_PORT: 5432
+      run: |
+        python -m pytest tests/ -v --cov=producer --cov=consumer --cov=utils --cov-report=xml
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      zookeeper:
+        image: wurstmeister/zookeeper:3.4.6
+        ports:
+          - 2181:2181
+
+      kafka:
+        image: wurstmeister/kafka:${{ env.KAFKA_VERSION }}
+        ports:
+          - 9092:9092
+        environment:
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_CREATE_TOPICS: "weather-data:1:1"
+        depends-on: zookeeper
+
+      postgres:
+        image: postgres:${{ env.POSTGRES_VERSION }}
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_weather_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Wait for services to be ready
+      run: |
+        sleep 30  # Wait for Kafka and Postgres to be fully ready
+
+    - name: Run integration tests
+      env:
+        OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        COUNTRY: UG
+        KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        WEATHER_TOPIC: weather-data
+        DB_USER: test_user
+        DB_PASSWORD: test_password
+        DB_NAME: test_weather_db
+        DB_HOST: localhost
+        DB_PORT: 5432
+      run: |
+        python -m pytest integration_tests/ -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [test, integration-test]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Build and push Docker images
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.DOCKERHUB_USERNAME }}/weather-producer:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/weather-producer:${{ github.sha }}
+        cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/weather-producer:latest
+        cache-to: type=inline
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment"
+        # Add your deployment commands here
+        # Example: kubectl apply -f k8s/staging/
+        # Example: docker-compose -f docker-compose.staging.yml up -d
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run security scan
+      uses: actions/dependency-review-action@v3
+
+    - name: Semgrep SAST
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: p/ci
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [test, integration-test, docker-build]
+    if: always()
+
+    steps:
+    - name: Notify Slack on failure
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: '❌ Weather Pipeline CI Failed'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
