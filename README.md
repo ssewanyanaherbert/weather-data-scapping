@@ -44,10 +44,6 @@ clickhouse/
 │   ├── __init__.py
 │   ├── scheduler.py             # Runs producer on a schedule
 │   └── weather_producer.py      # Fetches from API, publishes to Kafka
-├── scripts/
-│   ├── run_consumer.sh
-│   ├── run_producer.sh
-│   └── start_kafka.sh
 ├── storage/
 │   ├── db_client.py             # SQLAlchemy engine + session factory
 │   └── save_to_db.py            # ORM model + DB write logic
