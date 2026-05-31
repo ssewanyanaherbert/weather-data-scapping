@@ -107,11 +107,11 @@ COUNTRY=UG
 OPENWEATHER_API_KEY=your_api_key_here
 
 # PostgreSQL
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=weatherdb
+DB_USER=
+DB_PASSWORD=
+DB_HOST=
+DB_PORT=
+DB_NAME=
 ```
 
 > **Note:** New OpenWeather API keys can take up to 2 hours to activate after registration.
