@@ -1,4 +1,9 @@
+# docker/docker-compose.yml
+# Run from the project root:  docker-compose -f docker/docker-compose.yml up --build
+
 services:
+
+  # ── Zookeeper ────────────────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     ports:
@@ -12,20 +17,27 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Kafka ─────────────────────────────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.4.0
     ports:
-      - "9092:9092"
+      - "9092:9092"   # exposed so you can test from your host machine (e.g. Postman / CLI)
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # TWO listeners:
+      #   INTERNAL  — used by other Docker services  (kafka:29092)
+      #   EXTERNAL  — used by your host machine      (localhost:9092)
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:29092", "--list"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -34,13 +46,14 @@ services:
       zookeeper:
         condition: service_healthy
 
+  # ── PostgreSQL ────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:14-alpine
     restart: always
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
-      POSTGRES_DB: ${DB_NAME:-weather_db}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}   # matches .env default
+      POSTGRES_DB: ${DB_NAME:-weatherdb}            # matches .env default
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
@@ -51,44 +64,53 @@ services:
       timeout: 5s
       retries: 5
 
-  # Choose ONE: Either scheduler OR producer (comment out the one you don't want)
+  # ── Scheduler (producer on a timer) ──────────────────────────────────────────
+  # Comment this out and uncomment `producer` below if you want continuous mode.
   scheduler:
     build:
-      context: ..  # Project root
-      dockerfile: docker/Dockerfile 
+      context: ..          # project root — Dockerfile paths are relative to this
+      dockerfile: docker/Dockerfile
     command: python -m producer.scheduler
     depends_on:
       kafka:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     env_file:
       - ../.env
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Override localhost values from .env with Docker service names
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      DB_HOST: postgres
     volumes:
-      - ..:/app
-    working_dir: /app
+      - ../logs:/app/logs   # persist logs on the host
     restart: unless-stopped
 
+  # ── Producer (continuous, every N seconds) ────────────────────────────────────
+  # Uncomment to use instead of scheduler.
   # producer:
   #   build:
-  #     context: ..  # Project root
+  #     context: ..
   #     dockerfile: docker/Dockerfile
   #   command: python -m producer.weather_producer
   #   depends_on:
   #     kafka:
   #       condition: service_healthy
+  #     postgres:
+  #       condition: service_healthy
   #   env_file:
   #     - ../.env
   #   environment:
-  #     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  #     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  #     DB_HOST: postgres
   #   volumes:
-  #     - ..:/app
-  #   working_dir: /app
+  #     - ../logs:/app/logs
   #   restart: unless-stopped
 
+  # ── Consumer ──────────────────────────────────────────────────────────────────
   consumer:
     build:
-      context: ..  # Project root
+      context: ..
       dockerfile: docker/Dockerfile
     command: python -m consumer.weather_consumer
     depends_on:
@@ -99,10 +121,10 @@ services:
     env_file:
       - ../.env
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      DB_HOST: postgres
     volumes:
-      - ..:/app
-    working_dir: /app
+      - ../logs:/app/logs   # persist logs on the host
     restart: unless-stopped
 
 volumes:
