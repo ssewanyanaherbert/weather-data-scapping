@@ -102,6 +102,7 @@ WEATHER_TOPIC=weather_data
 # Location (used to query OpenWeather — no lat/lon needed)
 CITY=Kampala
 COUNTRY=UG
+EXTRA_CITIES=Entebbe,UG;Gulu,UG;Mbarara,UG;Jinja,UG;Mbale,UG
 
 # OpenWeather API
 OPENWEATHER_API_KEY=your_api_key_here
